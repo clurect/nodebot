@@ -96,7 +96,9 @@ listen(/~quote(\s+)?(.*)$/i, function(match, data, replyTo) {
     } else if (match[2].charAt(0) !== "") {
         //console.log(match[2].charAt(0));
         store(match[2]);
-        irc.action(replyTo, "Ooo that was a good one.");
+	replys = ["Ooo that was a good one.","More! More! Quotes for me to have!", "Did you think that through when you said it?","Interesting to hear that coming from you."];
+        which = Math.floor(Math.random() * replys.length);
+        irc.action(replyTo, replys[which]);
     } else {
         pick(replyTo);
     }
