@@ -7,7 +7,7 @@ var util = require('util'),
     fs = require('fs'),
     vm = require('vm'),
     repl = require('repl'),
-    _ = require('underscore'),
+    _ = require('lodash'),
     listdb = require('./lib/listdb');
 
 var irc = global.nodebot = (function () {
@@ -15,7 +15,7 @@ var irc = global.nodebot = (function () {
 
     socket = new net.Socket();
     socket.setNoDelay(true);
-    socket.setEncoding('ascii');
+    socket.setEncoding('utf8');
 
     buffer = {
         b: new Buffer(4096),
@@ -28,23 +28,32 @@ var irc = global.nodebot = (function () {
 
     function send(data) {
         if (!data || data.length == 0) {
-            console.log("ERROR tried to send no data");
-            return;
+            console.error("ERROR tried to send no data");
         } else if (data.length > 510) {
-            console.log("ERROR tried to send data > 510 chars in length: " + data);
-            return;
+            console.error("ERROR tried to send data > 510 chars in length: " + data);
+        } else {
+            socket.write(data + '\r\n', 'utf8', function () {
+                console.log("-> " + data);
+            });
         }
-        socket.write(data + '\r\n', 'ascii', function () {
-            console.log("-> " + data);
-        });
     }
+
+    socket.setTimeout(240 * 1000, function () {
+        // If the connection is closed, this will fail to send and the 'error'
+        // and 'close' events will trigger.
+        send('VERSION');
+    });
+
+    socket.on('close', function () {
+        process.exit();
+    });
 
     socket.on('data', function (data) {
         var newlineIdx;
         data = data.replace('\r', '');
         while ((newlineIdx = data.indexOf('\n')) > -1) {
             if (buffer.size > 0) {
-                data = buffer.b.toString('ascii', 0, buffer.size) + data;
+                data = buffer.b.toString('utf8', 0, buffer.size) + data;
                 newlineIdx += buffer.size;
                 buffer.size = 0;
             }
@@ -52,13 +61,13 @@ var irc = global.nodebot = (function () {
             data = data.slice(newlineIdx + 1);
         }
         if (data.length > 0) {
-            buffer.b.write(data, buffer.size, 'ascii');
+            buffer.b.write(data, buffer.size, 'utf8');
             buffer.size += data.length;
         }
     });
 
     function handle(data) {
-        var dest, i, user, replyTo;
+        var dest, i, user, replyTo, from;
         console.log("<- " + data);
         user = (/^:([^!]+)!/i).exec(data);
         if (user) {
@@ -68,36 +77,30 @@ var irc = global.nodebot = (function () {
             }
         }
         replyTo = null;
+        from = null;
         if (data.indexOf('PRIVMSG') > -1) {
             dest = (/^:([^!]+)!.*PRIVMSG ([^ ]+) /i).exec(data);
             if (dest) {
                 if (dest[2].toUpperCase() == nodebot_prefs.nickname.toUpperCase()) {
-                    replyTo = dest[1];
+                    replyTo = from = dest[1];
                 } else {
                     replyTo = dest[2];
+                    from = dest[1];
                 }
             }
         }
 
         var match, regex;
         for (i = 0; i < listeners.length; i++) {
-            if(_.isRegExp(listeners[i][0])) {
-                match = listeners[i][0].exec(data);
-            } else {
-                regex = 'PRIVMSG [^ ]+ :';
-                if(listeners[i][3] /* prefixed */) {
-                   regex += nodebot_prefs.command_prefix;
-                }
-                regex += listeners[i][0];
-                regex = new RegExp(regex);
-                match = regex.exec(data);
-            }
+            match = listeners[i][0].exec(data);
 
             if (match) {
                 try {
-                    listeners[i][1](match, data, replyTo);
+                    // TODO move data to the end since it is least commonly needed
+                    // and replyTo to the front, since it is always needed
+                    listeners[i][1](match, data, replyTo, from);
                 } catch (err) {
-                    console.log("caught error in script " + listeners[i][3] + ": " + err);
+                    console.log("Caught error in script " + listeners[i][3] + ": " + err);
                 }
                 if (listeners[i][2] /* once */) {
                     listeners.splice(i, 1);
@@ -111,6 +114,7 @@ var irc = global.nodebot = (function () {
         if (!data) {
             return data;
         }
+
         /* Note:
          * 0x00 (null character) is invalid
          * 0x01 signals a CTCP message, which we shouldn't ever need to do
@@ -119,7 +123,16 @@ var irc = global.nodebot = (function () {
          * 0x04 thru 0x19 are invalid control codes, except for:
          * 0x16 is "reverse" (swaps fg and bg colors) in mIRC
          */
-        return data.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/[^\x02-\x03|\x16|\x20-\x7e]/g, "");
+        return data.replace(/\n/g, "\\n").replace(/\r/g, "\\r")
+            .replace(/[^\x02-\x03|\x16|\x20-\x7e]/g, "");
+    }
+
+    function uncacheModules() {
+        // Clear the module cache
+        var key;
+        for (key in require.cache) {
+            delete require.cache[key];
+        }
     }
 
     return {
@@ -129,6 +142,9 @@ var irc = global.nodebot = (function () {
          */
         raw: function(stuff) {
             send(stuff);
+        },
+        sanitize: function (data) {
+            return sanitize(data);
         },
         connect: function (host, port, nickname, username, realname) {
             port = port || 6667;
@@ -140,6 +156,9 @@ var irc = global.nodebot = (function () {
         loadScripts: function () {
             var i, k, script, scripts;
             socket.pause();
+
+            uncacheModules();
+
             listeners = [];
             scripts = fs.readdirSync('scripts');
             if (scripts) {
@@ -160,7 +179,14 @@ var irc = global.nodebot = (function () {
                                 fs: fs,
                                 require: require,
                                 util: util,
+                                Buffer: Buffer,
+                                _: require('lodash'),
+                                regexFactory: require('./regexFactory'),
                                 listen: function (dataRegex, callback, once, prefixed) {
+                                    if (!_.isRegExp(dataRegex)) {
+                                        console.err("Error in script " + scripts[i] + ": first parameter to listen is not a RegExp object. Use regexFactory.");
+                                        return;
+                                    }
                                     once = !!once;
                                     if (typeof prefixed === "undefined" || prefixed === null) {
                                         prefixed = true;
@@ -203,10 +229,12 @@ var irc = global.nodebot = (function () {
         part: function (channel) {
             send("PART :" + sanitize(channel));
         },
-        privmsg: function (user, message) {
+        privmsg: function (user, message, sanitizeMessage) {
             if (user && message) {
                 user = sanitize(user); //avoid sanitizing these more than once
-                message = sanitize(message);
+                if (sanitizeMessage !== false) {
+                    message = sanitize(message);
+                }
                 
                 var privmsg = "PRIVMSG " + user + " :";
                 var max = 510 - privmsg.length;
@@ -242,5 +270,6 @@ process.on('uncaughtException', function (err) {
 });
 
 irc.loadScripts();
-irc.connect(nodebot_prefs.server, nodebot_prefs.port, nodebot_prefs.nickname, nodebot_prefs.nickname, nodebot_prefs.realname);
+irc.connect(nodebot_prefs.server, nodebot_prefs.port, nodebot_prefs.nickname, nodebot_prefs.username, nodebot_prefs.realname);
+
 repl.start({ prompt: '> ', ignoreUndefined: true });
