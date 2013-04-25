@@ -4,11 +4,9 @@ Nodebot - a [node.js](http://www.nodejs.org/) IRC bot
 Prerequisites
 -------------
 
-- node.js: v0.4.8 was used for development and testing of this bot.
-- underscore.js: `npm install underscore`
-- request and jsdom: used by the googleweather.js lib which is used by the weather.js script, can be installed with `npm install request` and `npm install jsdom`
-- request is also used by the URL title script
-- translate: used by the translate.js script, can be installed with `npm install translate`
+- node.js
+- npm
+- Run `npm install` to install the dependencies listed in `package.json`
 
 Configuration
 -------------

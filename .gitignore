@@ -2,5 +2,5 @@
 config.js
 data/*
 node_modules/
-
 !data/db.json
+scripts/*.local.js
